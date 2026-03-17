@@ -1,226 +1,141 @@
-﻿function Wait-ForPageReady {
+﻿$edge = "msedge.exe"
+$tempProfile = "$env:TEMP\edge_debug_profile"
+$global:CDPCommandId = 100
+function Send-CDPCommand {
     param(
         [Parameter(Mandatory=$true)]
-        [System.Net.WebSockets.ClientWebSocket] $Socket,
-
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        
         [Parameter(Mandatory=$true)]
-        [string] $TargetUrl,
+        [hashtable]$Params
+    )
 
-        [int] $MaxRetries = 50,
-        [int] $DelayMs = 2000
+    # Generar ID único
+    $id = $global:CDPCommandId
+    $global:CDPCommandId++
+
+    # Convertir a JSON
+    $json = @{
+        id = $id
+        method = $Params.method
+        params = $Params.params
+    } | ConvertTo-Json -Compress
+
+    # Enviar
+    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+    $segment = New-Object System.ArraySegment[byte] -ArgumentList (, $bytes)
+    $Socket.SendAsync($segment, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).Wait()
+
+    # Recibir
+    $buffer = New-Object byte[] 10240
+    $result = $Socket.ReceiveAsync([ArraySegment[byte]]$buffer, [Threading.CancellationToken]::None).Result
+
+    return [Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count) | ConvertFrom-Json
+}
+function Wait-TabReady {
+    param(
+        [Parameter(Mandatory=$true)]
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ExpectedUrl = $null,
+
+        [Parameter(Mandatory=$false)]
+        [int]$RetryDelayMs = 500
     )
 
     $ready = $false
     $attempt = 0
 
     while (-not $ready) {
-        # --- Obtener los contextos de ejecución ---
-        $cmdContexts = @'
-{"id":500,"method":"Runtime.executionContexts"}
-'@
-        $bytes = [Text.Encoding]::UTF8.GetBytes($cmdContexts)
-        $segment = New-Object System.ArraySegment[byte] -ArgumentList (, $bytes)
-        $Socket.SendAsync($segment,[System.Net.WebSockets.WebSocketMessageType]::Text,$true,[Threading.CancellationToken]::None).Wait()
+        $urlResp = Send-CDPCommand $Socket @{ method = "Runtime.evaluate"; params = @{ expression = "window.location.href" } }
+        $stateResp = Send-CDPCommand $Socket @{ method = "Runtime.evaluate"; params = @{ expression = "document.readyState" } }
 
-        $buffer = New-Object byte[] 16384
-        $result = $Socket.ReceiveAsync([ArraySegment[byte]]$buffer,[Threading.CancellationToken]::None).Result
-        $json = [Text.Encoding]::UTF8.GetString($buffer,0,$result.Count)
-        $contexts = ($json | ConvertFrom-Json).result.executionContexts
+        $currentUrl = if ($urlResp.result -and $urlResp.result.result) { $urlResp.result.result.value } else { $null }
+        $state = if ($stateResp.result -and $stateResp.result.result) { $stateResp.result.result.value } else { $null }
 
-        # Elegir un contexto que tenga un frameId (normalmente la página principal)
-        $targetContext = $contexts | Where-Object { $_.auxData.frameId -ne $null } | Select-Object -First 1
-        if (-not $targetContext) {
-            Start-Sleep -Milliseconds 500
-            continue
-        }
-        $contextId = $targetContext.id
+        $urlOk = $true
+        if ($ExpectedUrl) { $urlOk = $currentUrl -eq $ExpectedUrl }
 
-        # --- Evaluar URL ---
-        $cmdUrl = @"
-{"id":501,"method":"Runtime.evaluate","params":{"expression":"window.location.href","contextId":$contextId}}
-"@
-        $bytes = [Text.Encoding]::UTF8.GetBytes($cmdUrl)
-        $segment = New-Object System.ArraySegment[byte] -ArgumentList (, $bytes)
-        $Socket.SendAsync($segment,[System.Net.WebSockets.WebSocketMessageType]::Text,$true,[Threading.CancellationToken]::None).Wait()
-
-        $buffer = New-Object byte[] 10240
-        $result = $Socket.ReceiveAsync([ArraySegment[byte]]$buffer,[Threading.CancellationToken]::None).Result
-        $jsonUrl = [Text.Encoding]::UTF8.GetString($buffer,0,$result.Count)
-        $currentUrl = ($jsonUrl | ConvertFrom-Json).result.result.value
-
-        # --- Evaluar readyState ---
-        $cmdReady = @"
-{"id":502,"method":"Runtime.evaluate","params":{"expression":"document.readyState","contextId":$contextId}}
-"@
-        $bytes = [Text.Encoding]::UTF8.GetBytes($cmdReady)
-        $segment = New-Object System.ArraySegment[byte] -ArgumentList (, $bytes)
-        $Socket.SendAsync($segment,[System.Net.WebSockets.WebSocketMessageType]::Text,$true,[Threading.CancellationToken]::None).Wait()
-
-        $buffer = New-Object byte[] 10240
-        $result = $Socket.ReceiveAsync([ArraySegment[byte]]$buffer,[Threading.CancellationToken]::None).Result
-        $jsonReady = [Text.Encoding]::UTF8.GetString($buffer,0,$result.Count)
-        $state = ($jsonReady | ConvertFrom-Json).result.result.value
-
-        # --- Verificación final ---
-        if ($currentUrl -eq $TargetUrl -and $state -eq "complete") {
+        if ($urlOk -and $state -eq "complete") {
             $ready = $true
         } else {
-            Start-Sleep -Milliseconds $DelayMs
+            Start-Sleep -Milliseconds $RetryDelayMs
             $attempt++
-            Write-Progress -Activity "Waiting for URL and readyState" -Status "Retry count: $attempt"
-            if ($attempt -ge $MaxRetries) {
-                Write-Host "Max retries reached. Página no cargó correctamente."
-                exit 1
-            }
+            Write-Host "Esperando carga... intento $attempt ($currentUrl | $state)"
+            start-sleep 5
         }
     }
 
-    Write-Host "La página $TargetUrl fue cargada exitosamente"
+    Write-Host "Página cargada: $currentUrl"
+    return @{ url = $currentUrl; state = $state }
 }
-
-$edge = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-$tempProfile = "$env:TEMP\EdgeTempProfile"
-
-# --- Abrir Edge ---
-$proc = Start-Process $edge `
-    "--remote-debugging-port=9222 --user-data-dir=""$tempProfile"" https://rda.prod.cloud.fedex.com/rda/"
-
-# --- Esperar pestaña RDA ---
+$proc = Start-Process $edge "--remote-debugging-port=9222 --user-data-dir=`"$tempProfile`" https://rda.prod.cloud.fedex.com/rda/"
 $tab = $null
 $X = 0
 while (-not $tab) {
     try {
         $tabs = Invoke-RestMethod http://localhost:9222/json
         Write-Host "Tabs count:" $tabs.Count
+
         $tab = $tabs | Where-Object { $_.url -like 'https://rda.prod.cloud.fedex.com/rda/*' } | Select-Object -First 1
-        if ($tab) { Write-Host "RDA tab found:" $tab.url }
-        else { Write-Host "`rRDA tab not found yet, retrying..." -NoNewline }
-    } catch {
-        Write-Host "`rDevTools not ready, retrying..."
+        if ($tab) { Write-Host "RDA tab found:" $tab.url } else { Write-Host "RDA tab not found yet..." }
     }
+    catch { Write-Host "DevTools not ready..." }
+
     Start-Sleep -Milliseconds 500
     $X++
-    if ($X > 50) {exit}
+    Write-Host "Retry: $X"
 }
 
-# --- Conectar WebSocket ---
 $ws = $tab.webSocketDebuggerUrl
 $socket = New-Object System.Net.WebSockets.ClientWebSocket
 $uri = [Uri]$ws
-$socket.ConnectAsync($uri,[Threading.CancellationToken]::None).Wait()
-
-# --- Esperar document.readyState = complete ---
-
-Wait-ForPageReady -Socket $socket -TargetUrl "https://rda.prod.cloud.fedex.com/rda/"Wait-ForPageReady -Socket $socket -TargetUrl "https://rda.prod.cloud.fedex.com/rda/"
-
-# --- Esperar a que localStorage tenga el token ---
+$socket.ConnectAsync($uri, [Threading.CancellationToken]::None).Wait()
+Wait-TabReady -Socket $socket -ExpectedUrl "https://rda.prod.cloud.fedex.com/rda/"
 $tokenReady = $false
 while (-not $tokenReady) {
-
-    $cmd = @'
-{"id":2,"method":"Runtime.evaluate","params":{"expression":"localStorage.getItem(\"okta-token-storage\") !== null"}}
-'@
-
-    $bytes = [Text.Encoding]::UTF8.GetBytes($cmd)
-    $segment = New-Object System.ArraySegment[byte] -ArgumentList (, $bytes)
-
-    $socket.SendAsync($segment,
-        [System.Net.WebSockets.WebSocketMessageType]::Text,
-        $true,
-        [Threading.CancellationToken]::None).Wait()
-
-    $buffer = New-Object byte[] 10240
-    $result = $socket.ReceiveAsync([ArraySegment[byte]]$buffer,
-        [Threading.CancellationToken]::None).Result
-
-    $json = [Text.Encoding]::UTF8.GetString($buffer,0,$result.Count)
-    $tokenReady = ($json | ConvertFrom-Json).result.result.value
-
+    $resp = Send-CDPCommand $socket @{
+        method = "Runtime.evaluate"
+        params = @{ expression = 'localStorage.getItem("okta-token-storage") !== null' }
+    }
+    if ($resp.result -and $resp.result.result) { $tokenReady = $resp.result.result.value }
     if (-not $tokenReady) { Start-Sleep -Milliseconds 500 }
 }
-
-# --- Esperar token válido (no expirado) ---
 $validToken = $false
-
 while (-not $validToken) {
-
-    $cmd = @'
-{"id":3,"method":"Runtime.evaluate","params":{"expression":"JSON.stringify(JSON.parse(localStorage.getItem(\"okta-token-storage\")).accessToken)"}}
-'@
-
-    $bytes = [Text.Encoding]::UTF8.GetBytes($cmd)
-    $segment = New-Object System.ArraySegment[byte] -ArgumentList (, $bytes)
-
-    $socket.SendAsync($segment,
-        [System.Net.WebSockets.WebSocketMessageType]::Text,
-        $true,
-        [Threading.CancellationToken]::None).Wait()
-
-    $buffer = New-Object byte[] 10240
-    $result = $socket.ReceiveAsync([ArraySegment[byte]]$buffer,
-        [Threading.CancellationToken]::None).Result
-
-    $json = [Text.Encoding]::UTF8.GetString($buffer,0,$result.Count)
-
-    $obj = $json | ConvertFrom-Json
-
-if (-not $obj.result -or -not $obj.result.result -or -not $obj.result.result.value) {
-    Start-Sleep -Milliseconds 300
-    continue
-}
-
-$data = $obj.result.result.value | ConvertFrom-Json
-
+    $resp = Send-CDPCommand $socket @{
+        method = "Runtime.evaluate"
+        params = @{ expression = 'JSON.stringify(JSON.parse(localStorage.getItem("okta-token-storage")).accessToken)' }
+    }
+    if (-not $resp.result -or -not $resp.result.result -or -not $resp.result.result.value) { Start-Sleep 0.3; continue }
+    $data = $resp.result.result.value | ConvertFrom-Json
     $token = $data.accessToken
     $expires = $data.expiresAt
-
-    if (-not $token) {
-        Write-Host "`rToken aún no disponible..." -NoNewline
-        Start-Sleep 1
+    if (-not $token) { Write-Host "Token aún no disponible..."; Start-Sleep 1; continue }
+    $expiry = [DateTimeOffset]::FromUnixTimeSeconds($expires).ToLocalTime().DateTime
+    if ($expiry -le (Get-Date)) {
+        Write-Host "TOKEN EXPIRADO EL: $expiry"
+        Write-Host "TOKEN EXPIRADO: $token"
+        Send-CDPCommand $socket @{ method="Page.reload"; params=@{} }
+        Wait-TabReady -Socket $socket -ExpectedUrl "https://rda.prod.cloud.fedex.com/rda/"
+        write-Host "Recarga Lista"
         continue
     }
-
-    $expiry = [DateTimeOffset]::FromUnixTimeSeconds($expires).ToLocalTime().DateTime
-
-    Write-Host "Token expira:" $expiry
-
-    #if ($expiry -le (Get-Date)) {
-
-        Write-Host "Token expirado → recargando RDA"
-
-        $reload = '{"id":40,"method":"Page.reload"}'
-        $bytes = [Text.Encoding]::UTF8.GetBytes($reload)
-
-        $socket.SendAsync(
-            [ArraySegment[byte]]::new($bytes),
-            [System.Net.WebSockets.WebSocketMessageType]::Text,
-            $true,
-            [Threading.CancellationToken]::None
-        ).Wait()
-        Start-Sleep 2
-        Wait-ForPageReady -Socket $socket -TargetUrl "https://rda.prod.cloud.fedex.com/rda/"
-        continue
-    #}
-
     $validToken = $true
 }
-
-# --- Limpiar BOM ---
 $bytes = [System.Text.Encoding]::UTF8.GetBytes($token)
-
 if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
-    $bytes = $bytes[3..($bytes.Length-1)]
+    $bytes = $bytes[3..($bytes.Length - 1)]
 }
-
 $tokenClean = [System.Text.Encoding]::UTF8.GetString($bytes)
-
-# --- Guardar token ---
-[System.IO.File]::WriteAllText("$PSScriptRoot\TOKEN.txt", $tokenClean, [System.Text.Encoding]::UTF8)
-[System.IO.File]::WriteAllText("$PSScriptRoot\TOKEN_EXPIRES.txt", $expiry, [System.Text.Encoding]::UTF8)
-
-Write-Host "TOKEN GUARDADO: $tokenClean"
-
-# --- Cerrar Edge ---
+$path = Join-Path $PSScriptRoot "TOKEN.txt"
+[System.IO.File]::WriteAllText($path, $tokenClean, [System.Text.Encoding]::UTF8)
+$path = Join-Path $PSScriptRoot "TOKEN_EXPIRES.txt"
+[System.IO.File]::WriteAllText($path, $expiry, [System.Text.Encoding]::UTF8)
+Write-Host "EXPIRA: $expiry"
+Write-Host "TOKEN: $token"
+Write-Host "TOKEN GUARDADO en $path"
 Get-CimInstance Win32_Process |
     Where-Object { $_.CommandLine -like '*--remote-debugging-port=9222*' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
