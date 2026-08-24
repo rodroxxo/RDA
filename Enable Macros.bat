@@ -48,13 +48,26 @@ if defined PSPATH (
 echo.
 echo !GRAY!  Python!RESET!
 
-py -3.14 --version >nul 2>&1
+:: Check if Python 3.14 launcher / command works directly
+"%LocalAppData%\Programs\Python\Python314\python.exe" --version >nul 2>&1
 
 if !errorlevel! neq 0 (
     echo !RED!  [MISSING]!RESET! Python 3.14
-    echo !YELLOW!  [....]!RESET! Installing...
+    echo !YELLOW!  [....]!RESET! Downloading Python...
 
-winget list --id Python.Python.3.14 --exact >nul 2>&1 || winget install -e --id Python.Python.3.14 --silent --scope=user --disable-interactivity --accept-package-agreements --accept-source-agreements >nul 2>&1
+:: 1. Download official Python installer silently using built-in curl
+curl -L -o "%TEMP%\python_install.exe" "https://www.python.org/ftp/python/3.14.0/python-3.14.0-amd64.exe"
+
+echo !YELLOW!  [....]!RESET! Download Completed!
+echo !YELLOW!  [....]!RESET! Installing, please wait until finish...
+
+:: 2. Install silently for the current user, add to PATH, and include pip
+"%TEMP%\python_install.exe" /quiet InstallAllUsers=0 TargetDir="%LocalAppData%\Programs\Python\Python314" PrependPath=1 Include_test=0
+
+echo !YELLOW!  [....]!RESET! Installation is complete!
+
+:: 3. Clean up the installer file from TEMP
+del "%TEMP%\python_install.exe"
 
     if !errorlevel! equ 0 (
         echo !GREEN!  [OK]!RESET! Python 3.14 installed
@@ -72,16 +85,28 @@ winget list --id Python.Python.3.14 --exact >nul 2>&1 || winget install -e --id 
 
 
 echo.
-echo !GRAY!  Python packages!RESET!
+echo !GRAY!  PIP!RESET!
 
+:: Check if Python 3.14 launcher / command works directly
 "%LocalAppData%\Programs\Python\Python314\python.exe" -m pip --version >nul 2>&1
 
+
 if !errorlevel! neq 0 (
-    echo !YELLOW!  [WARN]!RESET! pip not available
-    goto :END
+    echo !RED!  [MISSING]!RESET! PIP
+    echo !YELLOW!  [....]!RESET! Installing...
+
+"%LocalAppData%\Programs\Python\Python314\python.exe" -m pip install --force-reinstall pip
+
+if !errorlevel! equ 0 (
+        echo !GREEN!  [OK]!RESET! PIP installed
+    ) else (
+        echo !YELLOW!  [WARN]!RESET! PIP installation failed
+        goto :END
+    )
+) else (
+    echo !GREEN!  [OK]!RESET! PIP 3.14
 )
 
-echo !GREEN!  [OK]!RESET! pip
 
 :: ==================================================
 :: Dependencies
