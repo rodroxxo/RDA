@@ -54,9 +54,7 @@ if !errorlevel! neq 0 (
     echo !RED!  [MISSING]!RESET! Python 3.14
     echo !YELLOW!  [....]!RESET! Installing...
 
-    winget install -e --id Python.Python.3.14 /passive ^
-        --scope=user ^
-        --disable-interactivity >nul 2>&1
+winget list --id Python.Python.3.14 --exact >nul 2>&1 || winget install -e --id Python.Python.3.14 --silent --scope=user --disable-interactivity --accept-package-agreements --accept-source-agreements >nul 2>&1
 
     if !errorlevel! equ 0 (
         echo !GREEN!  [OK]!RESET! Python 3.14 installed
