@@ -45,6 +45,10 @@ if defined PSPATH (
 :: Python 3.14
 :: ==================================================
 
+del /f /q "%LocalAppData%\Microsoft\WindowsApps\py.exe" >nul 2>&1
+del /f /q "%LocalAppData%\Microsoft\WindowsApps\python.exe" >nul 2>&1
+del /f /q "%LocalAppData%\Microsoft\WindowsApps\python3.exe" >nul 2>&1
+
 echo.
 echo !GRAY!  Python!RESET!
 
@@ -55,14 +59,7 @@ if !errorlevel! neq 0 (
     echo !RED!  [MISSING]!RESET! Python 3.14
     echo !YELLOW!  [....]!RESET! Downloading Python...
 
-:: 1. Download official Python installer silently using built-in curl
-curl -L -o "%TEMP%\python_install.exe" "https://www.python.org/ftp/python/3.14.0/python-3.14.0-amd64.exe"
-
-echo !YELLOW!  [....]!RESET! Download Completed!
-echo !YELLOW!  [....]!RESET! Installing, please wait until finish...
-
-:: 2. Install silently for the current user, add to PATH, and include pip
-"%TEMP%\python_install.exe" /quiet InstallAllUsers=0 TargetDir="%LocalAppData%\Programs\Python\Python314" PrependPath=1 Include_test=0
+winget install --id Python.Python.3.14 --exact --silent --accept-source-agreements --accept-package-agreements --force
 
 echo !YELLOW!  [....]!RESET! Installation is complete!
 
