@@ -45,36 +45,82 @@ if defined PSPATH (
 :: Python 3.14
 :: ==================================================
 
-del /f /q "%LocalAppData%\Microsoft\WindowsApps\py.exe" >nul 2>&1
-del /f /q "%LocalAppData%\Microsoft\WindowsApps\python.exe" >nul 2>&1
-del /f /q "%LocalAppData%\Microsoft\WindowsApps\python3.exe" >nul 2>&1
+set "PYTHON_DIR=%LocalAppData%\Programs\Python\Python314"
+set "PYTHON_EXE=%PYTHON_DIR%\python.exe"
 
 echo.
-echo !GRAY!  Python!RESET!
+echo !GRAY!  Python 3.14!RESET!
 
-:: Check if Python 3.14 launcher / command works directly
-"%LocalAppData%\Programs\Python\Python314\python.exe" --version >nul 2>&1
+:: --------------------------------------------------
+:: Check existing installation
+:: --------------------------------------------------
 
-if !errorlevel! neq 0 (
-    echo !RED!  [MISSING]!RESET! Python 3.14
-    echo !YELLOW!  [....]!RESET! Downloading Python...
-
-winget install --id Python.Python.3.14 --exact --silent --accept-source-agreements --accept-package-agreements --force
-
-echo !YELLOW!  [....]!RESET! Installation is complete!
-
-:: 3. Clean up the installer file from TEMP
-del "%TEMP%\python_install.exe"
+if exist "%PYTHON_EXE%" (
+    "%PYTHON_EXE%" --version >nul 2>&1
 
     if !errorlevel! equ 0 (
-        echo !GREEN!  [OK]!RESET! Python 3.14 installed
-    ) else (
-        echo !YELLOW!  [WARN]!RESET! Python installation failed
+        echo !GREEN!  [OK]!RESET! Python 3.14
+        goto :PYTHON_DONE
+    )
+)
+
+echo !RED!  [MISSING]!RESET! Python 3.14
+
+:: --------------------------------------------------
+:: Install Python Install Manager
+:: --------------------------------------------------
+
+where py >nul 2>&1
+
+if !errorlevel! neq 0 (
+    echo !YELLOW!  [....]!RESET! Installing Python Install Manager...
+
+    winget install 9NQ7512CXL7T -e ^
+        --accept-package-agreements ^
+        --accept-source-agreements ^
+        --disable-interactivity
+
+    if !errorlevel! neq 0 (
+        echo !RED!  [FAIL]!RESET! Python Install Manager installation failed
         goto :END
     )
-) else (
-    echo !GREEN!  [OK]!RESET! Python 3.14
 )
+
+:: --------------------------------------------------
+:: Install Python 3.14 into LocalAppData
+:: --------------------------------------------------
+
+echo !YELLOW!  [....]!RESET! Installing Python 3.14...
+
+py install 3.14 --target="%PYTHON_DIR%"
+
+if !errorlevel! neq 0 (
+    echo !RED!  [FAIL]!RESET! Python 3.14 installation failed
+    goto :END
+)
+
+:: --------------------------------------------------
+:: Verify
+:: --------------------------------------------------
+
+if not exist "%PYTHON_EXE%" (
+    echo !RED!  [FAIL]!RESET! Python was not found at:
+    echo         %PYTHON_EXE%
+    goto :END
+)
+
+"%PYTHON_EXE%" --version >nul 2>&1
+
+if !errorlevel! neq 0 (
+    echo !RED!  [FAIL]!RESET! Python executable cannot run
+    goto :END
+)
+
+echo !GREEN!  [OK]!RESET! Python 3.14 installed
+echo !GRAY!       %PYTHON_EXE%!RESET!
+
+:PYTHON_DONE
+
 
 :: ==================================================
 :: pip
@@ -92,7 +138,7 @@ if !errorlevel! neq 0 (
     echo !RED!  [MISSING]!RESET! PIP
     echo !YELLOW!  [....]!RESET! Installing...
 
-"%LocalAppData%\Programs\Python\Python314\python.exe" -m pip install --force-reinstall pip
+"%LocalAppData%\Programs\Python\Python314\python.exe" -m ensurepip
 
 if !errorlevel! equ 0 (
         echo !GREEN!  [OK]!RESET! PIP installed
